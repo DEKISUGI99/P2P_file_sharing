@@ -5,6 +5,7 @@ import threading
 import os
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import argparse
 
 # Tracker URL
 TRACKER_URL = "http://127.0.0.1:5000"
@@ -58,3 +59,5 @@ if __name__ == "__main__":
     
     register_peer(file_hash, chunks)  # Register with tracker
     get_peers(file_hash)              # Fetch list of peers
+
+
