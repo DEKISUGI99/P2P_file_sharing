@@ -7,7 +7,7 @@ import os
 
 # Constants
 TRACKER_URL = "http://127.0.0.1:5000"  #Central Tracker Address
-DOWNLOAD_FOLDER = "downloads/p2p_share"
+DOWNLOAD_FOLDER = "../downloads/p2p_share"
 LISTEN_PORT = 5001  # Fixed listening port for handshake
 BUFFER_SIZE = 8192  # Same chunk size for uniform file division (for future use)
 
@@ -53,6 +53,28 @@ class Peer:
             print(f"❌ Error in handle_peer_request: {e}")
 
     
+    # def start_file_transfer(self, transfer_port, file_hash, peer_ip):
+    #     """Starts a TCP server on a new port to send the requested file."""
+    #     transfer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #     transfer_socket.bind((self.peer_ip, transfer_port))
+    #     transfer_socket.listen(1)
+
+    #     print(f"📡 Ready to send file {file_hash} on port {transfer_port}...")
+
+    #     conn, _ = transfer_socket.accept()
+
+    #     file_path = os.path.join(DOWNLOAD_FOLDER, file_hash)
+    #     if os.path.exists(file_path):
+    #         with open(file_path, "rb") as f:
+    #             while chunk := f.read(BUFFER_SIZE):
+    #                 conn.send(chunk)
+    #         print(f"✅ Sent file {file_hash} to {peer_ip}:{transfer_port}")
+    #     else:
+    #         print(f"❌ File {file_hash} not found!")
+
+    #     conn.close()
+    #     transfer_socket.close()
+    
     def start_file_transfer(self, transfer_port, file_hash, peer_ip):
         """Starts a TCP server on a new port to send the requested file."""
         transfer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -63,17 +85,25 @@ class Peer:
 
         conn, _ = transfer_socket.accept()
 
-        file_path = os.path.join(DOWNLOAD_FOLDER, file_hash)
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as f:
+        # 🧠 Try to locate actual file by comparing hashes of files in folder
+        found_path = None
+        for fname in os.listdir(DOWNLOAD_FOLDER):
+            fpath = os.path.join(DOWNLOAD_FOLDER, fname)
+            if os.path.isfile(fpath) and compute_file_hash(fpath) == file_hash:
+                found_path = fpath
+                break
+
+        if found_path:
+            with open(found_path, "rb") as f:
                 while chunk := f.read(BUFFER_SIZE):
                     conn.send(chunk)
-            print(f"✅ Sent file {file_hash} to {peer_ip}:{transfer_port}")
+            print(f"✅ Sent file {file_hash} ({os.path.basename(found_path)}) to {peer_ip}:{transfer_port}")
         else:
-            print(f"❌ File {file_hash} not found!")
+            print(f"❌ File with hash {file_hash} not found in {DOWNLOAD_FOLDER}")
 
         conn.close()
         transfer_socket.close()
+
         
         
     def get_available_port(self):
@@ -124,12 +154,12 @@ def get_peers(file_hash):
     return response.json().get("peers", [])
         
 
-def request_file(peer_ip, file_hash):
+def request_file(peer_ip,peer_port, file_hash):
     """Sends a TCP request to another peer to download a file."""
     try:
         # Step 1: Send file request (TCP handshake)
         handshake_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        handshake_socket.connect((peer_ip, LISTEN_PORT))
+        handshake_socket.connect((peer_ip, peer_port))
 
         # Send the file hash as plain text
         handshake_socket.send(file_hash.encode())
@@ -170,11 +200,12 @@ def download_file(file_hash):
         return
 
     print(f"🌐 Found {len(peers)} peers. Starting download...")
-
+    print(peers)
     threads = []
     for peer in peers:
         peer_ip = peer["ip"]
-        thread = threading.Thread(target=request_file, args=(peer_ip, file_hash))
+        peer_port=peer["port"]
+        thread = threading.Thread(target=request_file, args=(peer_ip,peer_port, file_hash))
         threads.append(thread)
         thread.start()
 
@@ -206,106 +237,3 @@ if __name__ == "__main__":
     else:
         print("❌ Invalid usage. Run with --file <file_path> to register or --file_hash <name> to download or --listen")
 
-
-
-    # def handle_peer_request(self, client_socket, addr):
-    #     """Handles incoming file requests from other peers."""
-    #     request_data = client_socket.recv(BUFFER_SIZE).decode()
-    #     file_hash = request_data.split(":", 1)
-        
-    #     # Assign a new dynamic port for transfer
-    #     transfer_port = self.get_available_port()
-
-    #     # Inform the requesting peer of the new transfer port
-    #     client_socket.send(str(transfer_port).encode())
-    #     client_socket.close()
-
-    #     # Start file transfer on the new port
-    #     threading.Thread(target=self.start_file_transfer, args=(transfer_port, file_hash, addr[0])).start()
-
-    # def start_file_transfer(self, transfer_port, file_hash, peer_ip):
-    #     """Handles the actual file transfer on a new dynamic port (Daemon Thread)."""
-    #     transfer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #     transfer_socket.bind((self.peer_ip, transfer_port))
-    #     transfer_socket.listen(1)
-
-    #     print(f"📡 Ready to send file {file_hash} on port {transfer_port}...")
-
-    #     conn, _ = transfer_socket.accept()
-    #     file_path = os.path.join(DOWNLOAD_FOLDER, file_hash)
-
-    #     if os.path.exists(file_path):
-    #         with open(file_path, "rb") as file:
-    #             while chunk := file.read(8192):
-    #                 conn.send(chunk)
-    #         print(f"✅ Sent file {file_hash} to {peer_ip}:{transfer_port}")
-    #     else:
-    #         print(f"❌ File {file_hash} not found!")
-
-    #     conn.close()
-    #     transfer_socket.close()
-
-
-# def request_file(peer_ip,  file_hash):
-#     """Initiates handshake and downloads a file from a peer."""
-#     try:
-#         # Step 1: Request transfer port from peer
-#         handshake_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#         handshake_socket.connect((peer_ip, LISTEN_PORT))
-#         handshake_socket.send(f"{file_hash}:{LISTEN_PORT}".encode())
-#         transfer_port = int(handshake_socket.recv(BUFFER_SIZE).decode())
-#         handshake_socket.close()
-
-#         print(f"🔄 Peer {peer_ip} assigned transfer port {transfer_port}")
-
-#         # Step 2: Download file from assigned transfer port
-#         download_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#         download_socket.connect((peer_ip, transfer_port))
-#         file_path = os.path.join(DOWNLOAD_FOLDER, file_hash)
-
-#         with open(file_path, "wb") as file:
-#             while chunk := download_socket.recv(BUFFER_SIZE):
-#                 file.write(chunk)
-
-#         print(f"✅ Downloaded {file_hash} from {peer_ip}:{transfer_port}")
-#         download_socket.close()
-
-#     except Exception as e:
-#         print(f"⚠️ Error requesting file from {peer_ip}:{LISTEN_PORT} - {e}")
-
-
-
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser(description="P2P Hybrid File Sharing Node")
-#     parser.add_argument("--peer_ip", default="127.0.0.1", help="Peer IP address")
-
-#     args = parser.parse_args()
-
-#     # Start hybrid peer with listener in background
-#     peer = Peer(args.peer_ip, LISTEN_PORT)
-#     threading.Thread(target=peer.start_listener, daemon=True).start()
-
-#     # Main interactive menu
-#     while True:
-#         print("\n🔧 Select an option:")
-#         print("1. Register a file")
-#         print("2. Download a file")
-#         print("3. Exit")
-
-#         choice = input("Enter choice (1/2/3): ").strip()
-
-#         if choice == "1":
-#             file_path = input("📁 Enter path to file: ").strip()
-#             if os.path.exists(file_path):
-#                 register_peer(file_path)
-#             else:
-#                 print("❌ File does not exist.")
-#         # elif choice == "2":
-#         #     file_hash = input("🔍 Enter file hash to download: ").strip()
-#         #     if file_hash:
-#         #         download_file(file_hash)
-#         elif choice == "3":
-#             print("👋 Exiting.")
-#             break
-#         else:
-#             print("❌ Invalid choice. Try again.")
