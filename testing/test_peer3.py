@@ -9,7 +9,7 @@ import shutil
 # Constants
 TRACKER_URL = "http://127.0.0.1:5000"  #Central Tracker Address
 DOWNLOAD_FOLDER = "../downloads/p2p_share"
-LISTEN_PORT = 5002  # Fixed listening port for handshake
+LISTEN_PORT = 5003  # Fixed listening port for handshake
 BUFFER_SIZE = 8192  # Same chunk size for uniform file division (for future use)
 
 # Ensure download folder exists

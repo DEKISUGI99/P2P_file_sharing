@@ -14,6 +14,7 @@ lock = threading.Lock()
 def register_peer():
     data = request.json
     file_hash = data.get("file_hash")
+    file_size = data.get("file_size")  # ✅ new line
     peer_ip = request.remote_addr
     chunks = data.get("chunks", [])
     port = data.get("port")
@@ -22,17 +23,25 @@ def register_peer():
         return jsonify({"error": "Missing file_hash, port or chunks"}), 400
 
     with lock:
+        # ✅ If this file_hash is new, initialize with file_size and empty peers list
         if file_hash not in file_registry:
-            file_registry[file_hash] = []
+            if not file_size:
+                return jsonify({"error": "Missing file_size for new file"}), 400  # First time must include it
+            file_registry[file_hash] = {
+                "file_size": file_size,
+                "peers": []
+            }
 
-        # Prevent duplicate registration of same peer:port
-        existing_peers = file_registry[file_hash]
+        # ✅ Reference to peers list
+        existing_peers = file_registry[file_hash]["peers"]
+
+        # Prevent duplicate registration
         for peer in existing_peers:
             if peer["ip"] == peer_ip and peer["port"] == port:
                 peer["chunks"] = chunks  # Update chunks if already exists
                 break
         else:
-            file_registry[file_hash].append({
+            existing_peers.append({
                 "ip": peer_ip,
                 "port": port,
                 "chunks": chunks
@@ -40,16 +49,22 @@ def register_peer():
 
     return jsonify({"message": f"Peer {peer_ip}:{port} registered for file {file_hash}"}), 200
 
-
 # 📌 Get list of peers and their available chunks for a file
 @app.route('/get_peers', methods=['GET'])
 def get_peers():
     file_hash = request.args.get("file_hash")
 
     if not file_hash or file_hash not in file_registry:
-        return jsonify({"peers": []}), 200  # Now returns empty list instead of {}
+        return jsonify({"peers": [], "file_size": 0}), 200
 
-    return jsonify({"peers": file_registry[file_hash]}), 200
+    entry = file_registry[file_hash]
+    # entry is expected to be a dict like:
+    # {"file_size": 12345, "peers": [{ip: ..., port: ...}, ...]}
+
+    return jsonify({
+        "peers": entry["peers"],
+        "file_size": entry.get("file_size", 0)
+    }), 200
 
 
 # 📌 Remove a peer (when it disconnects)

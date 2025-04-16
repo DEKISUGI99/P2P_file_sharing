@@ -36,40 +36,51 @@ class Peer:
     def handle_peer_request(self, client_socket, addr):
         """Handles incoming file requests from other peers (TCP)."""
         try:
-            file_hash = client_socket.recv(BUFFER_SIZE).decode().strip()
+            # Receive file hash and byte range request from the client
+            request_data = client_socket.recv(BUFFER_SIZE).decode().strip()
+            file_hash, start_byte, end_byte = request_data.split("|")  # Parse file_hash, start_byte, and end_byte
+            start_byte, end_byte = int(start_byte), int(end_byte)
 
             # Allocate a new port to handle the file transfer
             transfer_port = self.get_available_port()
-            client_socket.send(str(transfer_port).encode())  #saying that i am ready to send the file from this endpoint->(my_ip,transfer_port), so come to this my_ip,transfer_port to get your file
+            client_socket.send(str(transfer_port).encode())  # Send the port to client to initiate transfer
             client_socket.close()
 
-            # Start a separate thread to handle actual file sending
+            # Start a separate thread to handle the file sending for the requested range
             threading.Thread(
                 target=self.start_file_transfer,
-                args=(transfer_port, file_hash, addr[0]),
+                args=(transfer_port, file_hash, start_byte, end_byte, addr[0]),  # Pass start and end byte range
                 daemon=True
             ).start()
 
         except Exception as e:
             print(f"❌ Error in handle_peer_request: {e}")
 
-    def start_file_transfer(self, transfer_port, file_hash, peer_ip):
-        """Starts a TCP server on a new port to send the requested file."""
+
+    def start_file_transfer(self, transfer_port, file_hash, start_byte, end_byte, peer_ip):
+        """Starts a TCP server on a new port to send the requested chunk of the file."""
         transfer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        transfer_socket.bind((self.my_ip, transfer_port))   #i am creating new socket from this port from where i am ready to send the file, so tell me on this port,ip 
+        transfer_socket.bind((self.my_ip, transfer_port))  # Bind to the transfer port
         transfer_socket.listen(1)
 
-        print(f"📡 Ready to send file {file_hash} on port {transfer_port}...")
+        print(f"📡 Ready to send file chunk {start_byte}-{end_byte} for {file_hash} on port {transfer_port}...")
 
-        conn, _ = transfer_socket.accept()  #as request arrieves starts file transfer
+        conn, _ = transfer_socket.accept()  # Wait for client connection
 
-        file_path = os.path.join(DOWNLOAD_FOLDER, file_hash) #here is the file i want to send
+        file_path = os.path.join(DOWNLOAD_FOLDER, file_hash)  # Locate the file to send
 
         if os.path.isfile(file_path):
             with open(file_path, "rb") as f:
-                while chunk := f.read(BUFFER_SIZE):
-                    conn.send(chunk)   #sending the file to the peer which made connection
-            print(f"✅ Sent file {file_hash} from {self.my_ip}:{transfer_port}")
+                f.seek(start_byte)  # Move to the start byte of the chunk
+                bytes_to_send = end_byte - start_byte  # Calculate how many bytes to send
+
+                while bytes_to_send > 0:
+                    chunk = f.read(min(BUFFER_SIZE, bytes_to_send))  # Read chunk of the file
+                    if not chunk:
+                        break
+                    conn.send(chunk)  # Send the chunk to the peer
+                    bytes_to_send -= len(chunk)  # Decrease remaining bytes to send
+                print(f"✅ Sent file chunk {start_byte}-{end_byte} from {self.my_ip}:{transfer_port}")
         else:
             print(f"❌ File with hash {file_hash} not found in {DOWNLOAD_FOLDER}")
 
@@ -104,9 +115,13 @@ def register_peer(file_path):
             print(f"❌ Error copying file to shared folder: {e}")
             return
 
+    # ✅ Step 2.5: Get file size
+    file_size = os.path.getsize(file_path)
+
     # Step 3: Register with tracker (over HTTP)
     peer_info = {
         "file_hash": file_hash,
+        "file_size": file_size,  # ✅ Include file size here
         "ip": "127.0.0.1",
         "chunks": ["full"],
         "port": LISTEN_PORT
@@ -137,63 +152,84 @@ def compute_file_hash(file_path):
 
 ## Client Section
 def get_peers(file_hash):
-    """Get a list of peers that have the requested file."""
-    response = requests.get(f"{TRACKER_URL}/get_peers?file_hash={file_hash}")
-    return response.json().get("peers", [])
-        
+    try:
+        response = requests.get(f"{TRACKER_URL}/get_peers", params={"file_hash": file_hash})  # ✅ Use params
+        if response.status_code == 200:
+            data = response.json()
+            return data["peers"], int(data["file_size"])  # ✅ cast file_size to int
+        else:
+            print("❌ Tracker returned an error.")
+            return [], 0
+    except Exception as e:
+        print(f"❌ Error contacting tracker: {e}")
+        return [], 0
 
-def request_file(peer_ip,peer_port, file_hash):
-    """Sends a TCP request to another peer to download a file."""
+def request_file(peer_ip, peer_port, file_hash, start_byte, end_byte):
+    """Requests a specific chunk of the file from a peer."""
     try:
         # Step 1: Send file request (TCP handshake)
         handshake_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        handshake_socket.connect((peer_ip, peer_port))  #makes handshake connection with (peer_ip(ip of peer-server), peer_port(port of peer-server))->(this is where the peer-servers are listening to the incoming new client connection) to tell him that i want the file
+        handshake_socket.connect((peer_ip, peer_port))  # Connection to peer
 
-        # Send the file hash as plain text
-        handshake_socket.send(file_hash.encode())
+        # Send the file hash and byte range request
+        request_data = f"{file_hash}|{start_byte}|{end_byte}"
+        handshake_socket.send(request_data.encode())  # Send file hash and byte range
 
         # Receive the dynamic transfer port from the peer
-        transfer_port = int(handshake_socket.recv(BUFFER_SIZE).decode())   #received the port where to request for the file
+        transfer_port = int(handshake_socket.recv(BUFFER_SIZE).decode())  # Get the dynamic transfer port
         handshake_socket.close()
 
-        print(f"🔄 Peer {peer_ip} assigned transfer port {transfer_port}")  #from this socket addresss (peer_ip,transfer_port) we can get our required file
+        print(f"🔄 Peer {peer_ip} assigned transfer port {transfer_port}")
 
-        # Step 2: Connect to dynamic port and download the file
+        # Step 2: Connect to dynamic port and download the chunk
         download_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         download_socket.connect((peer_ip, transfer_port))
 
-        file_path = os.path.join(DOWNLOAD_FOLDER, file_hash+'received')  #this is the path where our file will get stored
-        with open(file_path, "wb") as f:
+        file_path = os.path.join(DOWNLOAD_FOLDER, file_hash + '_received')  # Path to save downloaded file
+        with open(file_path, "r+b") as f:  # Open the file in append mode
+            f.seek(start_byte)  # Move pointer to start byte of the chunk
             while True:
                 chunk = download_socket.recv(BUFFER_SIZE)
                 if not chunk:
                     break
-                f.write(chunk)
+                f.write(chunk)  # Write the chunk to the file
 
-        print(f"✅ Downloaded {file_hash} from {peer_ip}:{transfer_port}")
+        print(f"✅ Downloaded chunk {start_byte}-{end_byte} from {peer_ip}:{transfer_port}")
         download_socket.close()
 
     except Exception as e:
         print(f"⚠️ Error in getting file from {peer_ip}:{transfer_port} - {e}")
 
-
 def download_file(file_hash):
-    """Handles full file download from multiple peers."""
-
+    """Handles full file download from multiple peers in chunks."""
     print(f"✅ File found! Hash: {file_hash}")
-    peers = get_peers(file_hash)
+    peers, file_size = get_peers(file_hash)  # ⚡ get both peers and file_size
 
     if not peers:
         print("❌ No peers available for this file.")
         return
 
     print(f"🌐 Found {len(peers)} peers. Starting download...")
-    print(peers)
+    # 📂 Pre-create the empty file
+    file_path = os.path.join(DOWNLOAD_FOLDER, file_hash + '_received')
+    with open(file_path, "wb") as f:
+        f.truncate(file_size)
+    print(f"📄 Pre-created file of size {file_size} bytes.")
+
+    # 🔥 Start downloading parts
+    num_peers = len(peers)
+    chunk_size = file_size // num_peers
+
     threads = []
-    for peer in peers:
+
+    for i, peer in enumerate(peers):
         peer_ip = peer["ip"]
-        peer_port=peer["port"]
-        thread = threading.Thread(target=request_file, args=(peer_ip,peer_port, file_hash))
+        peer_port = peer["port"]
+
+        start_byte = i * chunk_size
+        end_byte = (i + 1) * chunk_size if i < num_peers - 1 else file_size  # Last peer adjusts
+
+        thread = threading.Thread(target=request_file, args=(peer_ip, peer_port, file_hash, start_byte, end_byte))
         threads.append(thread)
         thread.start()
 
@@ -201,7 +237,6 @@ def download_file(file_hash):
         thread.join()
 
     print("🎉 Download completed!")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="P2P Hybrid File Sharing Node")
